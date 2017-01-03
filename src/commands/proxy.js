@@ -221,32 +221,23 @@ async function processAPIRequest (req, res, {
   }
 }
 
-function findRoleName (stackResources, runner) {
-  const functionName = runner.name;
-  const lambdaName = functionName[0].toUpperCase() + functionName.substring(1);
-  const cfLogicalRoleName = templateLambdaRoleName({ lambdaName });
-  let found = null;
-  stackResources.forEach(resource => {
-    if (resource.LogicalResourceId === cfLogicalRoleName) {
-      found = resource.PhysicalResourceId;
-    }
-  });
-  if (!found) {
-    throw new Error(`Cannot find an IAM Role for '${cfLogicalRoleName}'`);
-  }
-  return found;
-}
-
 async function assumeRole (stackResources, runner) {
-  const roleName = findRoleName(stackResources, runner);
   const getRoleResult = await iam.getRole({
-    RoleName: roleName
+    RoleName: PROXY_IAM_ROLE_NAME
   }).promise();
   const roleArn = getRoleResult.Role.Arn;
   debug('   [AWS STS] Assuming Role ARN', roleArn);
   const assumeRoleParams = {
     RoleArn: roleArn,
-    RoleSessionName: 'dawson-dev-proxy'
+    RoleSessionName: 'dawson-dev-proxy',
+    Policy: JSON.stringify({
+
+      // STOP!!
+      // We have no way to resolve CloudFormation-specific code
+      // found in api.policyStatements, so we cannot generate a viable Policy,
+      // sorry :(
+
+    })
   };
   const assumedRole = await sts.assumeRole(assumeRoleParams).promise();
   debug('   [AWS STS] Assumed Credentials', assumedRole.Credentials.AccessKeyId);
@@ -350,6 +341,53 @@ async function getOutputsAndResources ({ stackName }) {
   return outputsAndResourcesCache;
 }
 
+const PROXY_IAM_ROLE_NAME = 'DawsonDevelopmentProxyRole';
+async function createProxyIAMRole ({ overwriteProxyRole }) {
+  const iam = new AWS.IAM({});
+  try {
+    await iam.getRole({
+      RoleName: PROXY_IAM_ROLE_NAME
+    }).promise();
+    debug('Found existing Proxy IAM Role', PROXY_IAM_ROLE_NAME);
+    if (!overwriteProxyRole) {
+      return;
+    }
+    debug('Deleting existing Proxy IAM Role', PROXY_IAM_ROLE_NAME);
+    await iam.deleteRole({
+      RoleName: PROXY_IAM_ROLE_NAME
+    }).promise();
+  } catch (e) {
+    debug('Creating Proxy IAM Role named', PROXY_IAM_ROLE_NAME);
+  }
+
+  const getUserResult = await iam.getUser({}).promise();
+  const userArn = getUserResult.User.Arn;
+  const accountId = /^arn:aws:iam::(\d+):/.exec(userArn)[1];
+
+  const createResult = await iam.createRole({
+    AssumeRolePolicyDocument: JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [{
+        Sid: 'dawsonDefaultDevTrustStmt',
+        Effect: 'Allow',
+        Principal: {
+          AWS: `arn:aws:iam::${accountId}:root`
+        },
+        Action: 'sts:AssumeRole'
+      }]
+    }),
+    RoleName: PROXY_IAM_ROLE_NAME,
+    Path: '/'
+  }).promise();
+  debug('\trole creation OK', createResult);
+
+  const attachResult = await iam.attachRolePolicy({
+    RoleName: PROXY_IAM_ROLE_NAME,
+    PolicyArn: 'arn:aws:iam::aws:policy/AdministratorAccess'
+  });
+  debug('\tattachRolePolicy OK', attachResult);
+}
+
 function createBundle ({ stage, stackName, onlyCompile = false, skipChmod }) {
   return taskCreateBundle({
     appStageName: stage,
@@ -367,7 +405,8 @@ export function run (argv) {
     assetsProxy,
     assetsPath,
     verbose,
-    skipChmod
+    skipChmod,
+    overwriteProxyRole
   } = argv;
   const port = argv.port || process.env.PORT || 3000;
 
@@ -489,6 +528,10 @@ export function run (argv) {
       title: 'validating AWS resources',
       task: () => new Listr([
         {
+          title: 'checking Proxy\'s IAM Role',
+          task: () => createProxyIAMRole({ overwriteProxyRole })
+        },
+        {
           title: 'getting stack details from CloudFormation',
           task: () => {
             return getOutputsAndResources({ stackName })
@@ -514,32 +557,6 @@ export function run (argv) {
               .then(([ _outputs, _resources ]) => {
                 [ outputs, resources ] = [ _outputs, _resources ];
               });
-          }
-        },
-        {
-          title: 'checking IAM Roles',
-          task: () => {
-            Object.values(API_DEFINITIONS).every(runner => {
-              if (runner.name === 'customTemplateFragment') {
-                return true;
-              }
-              try {
-                const roleName = findRoleName(resources, runner);
-                debug(`Function '${runner.name}' will execute with IAM Role '${roleName}'`);
-                return true;
-              } catch (e) {
-                throw createError({
-                  kind: 'Missing resources',
-                  reason: `Function '${runner.name}' has not yet been deployed.`,
-                  detailedReason: stripIndent`
-                    dawson couldn't find any role to use when executing this function.
-                    This happens when you're invoking a function that has never been deployed before.
-                    Before a function can be executed, it must have been deployed at least once.
-                  `,
-                  solution: 'execute $ dawson deploy, wait for the deploy to complete and then run this command again.'
-                });
-              }
-            });
           }
         }
       ])
@@ -617,7 +634,7 @@ function setupWatcher ({ stage, stackName, ignore = [], PROJECT_ROOT }) {
       return;
     }
 
-    if (ignoreList.some(pattern => minimatch(fileName, pattern))) {
+    if (ignoreList.some(pattern => minimatch(fileName, pattern, { dot: true, nocase: true }))) {
       debug(`   Reload: [ignored] ${fileName}`.dim);
       return;
     }

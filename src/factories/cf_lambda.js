@@ -10,16 +10,7 @@ export function templateLambdaName ({ lambdaName }) {
 }
 
 function extraTrustPrincipals () {
-  if (process.env.NODE_ENV === 'production') {
-    return {};
-  }
-  // In envs deployed with NODE_ENV !== production
-  // we allow current account identities to assume this role
-  // for testing with the development proxy
-  // https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements.html#Principal
-  return {
-    'AWS': [{ 'Fn::Sub': 'arn:aws:iam::${AWS::AccountId}:root' }] // eslint-disable-line
-  };
+  return {};
 }
 
 export function templatePolicyDocument ({
