@@ -1,35 +1,4 @@
 import { stripIndent } from 'common-tags';
-import prettier from 'prettier';
-
-function getRunnerCode (name, apiConfig) {
-  if (apiConfig.devInstrument !== true ||
-      process.env.DAWSON_DEV_PROXY === 'yes') {
-    return 'return runner(event, context);';
-  }
-  const logicalLambdaName = `${name[0].toUpperCase()}${name.slice(1)}`;
-  return stripIndent`
-    return new Promise((resolve, reject) => {
-      console.log('devInstrument: will handle this event');
-      const AWS = require('aws-sdk');
-      const sqs = new AWS.SQS({ apiVersion: '2012-11-05' });
-      const queueUrl = process.env.DAWSONInstrument_Queue_${logicalLambdaName};
-      const message = JSON.stringify(event);
-      sqs.sendMessage({
-        QueueUrl: queueUrl,
-        MessageBody: message
-      })
-      .promise()
-      .then(data => {
-        console.log('devInstrument: message publish OK', data.MessageId);
-        return callback(null);
-      })
-      .catch(e => {
-        console.log('devInstrument: error publishing to Queue', queueUrl, message);
-        return callback(e);
-      });
-    });
-  `;
-}
 
 function getWrappingCode (apis, name) {
   const apiConfig = apis[name].api;
@@ -46,7 +15,7 @@ function getWrappingCode (apis, name) {
       const runner = require('./api').${name};
       Promise.resolve()
       .then(function () {
-        ${getRunnerCode(name, apiConfig)}
+        return runner(event, context);
       })
       .then(function (data) {
         ${hasEndpoint
@@ -91,7 +60,7 @@ export default function createIndex (apis, stackName) {
   const exportedFunctions = Object
     .keys(apis)
     .map(name => getWrappingCode(apis, name));
-  let code = stripIndent`
+  return stripIndent`
     require('babel-polyfill');
 
     const stackName = '${stackName}';
@@ -125,10 +94,4 @@ export default function createIndex (apis, stackName) {
 
     ${exportedFunctions.join('\n\n')}
   `;
-  code = prettier.format(code, {
-    printWidth: 80,
-    singleQuote: true,
-    bracketSpacing: true
-  });
-  return code;
 }

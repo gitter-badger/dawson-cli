@@ -106,8 +106,7 @@ function taskCreateFunctionTemplatePartial (
     runtime,
     authorizer,
     redirects = false,
-    excludeEnv,
-    devInstrument
+    excludeEnv
   } = def.api;
   const name = def.name;
 
@@ -135,8 +134,7 @@ function taskCreateFunctionTemplatePartial (
     zipS3Location,
     policyStatements,
     runtime,
-    environment,
-    devInstrument
+    environment
   });
 
   if (resourcePath === false) {
